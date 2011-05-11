@@ -1,0 +1,237 @@
+<?php
+// $Id$
+
+/**
+ * @file
+ * Functions for the MRP Book Utils module.
+ */
+
+/**
+ * Implements hook_menu().
+ *
+ * Provides a default page to explain what this module does.
+ */
+function mrp_book_utils_menu() {
+  $items['mrp/book_utils'] = array(
+    'page callback' => 'mrp_book_utils_page',
+    'access callback' => TRUE,
+    'title' => 'MRP Book Utils',
+  );
+  return $items;
+}
+
+/**
+ * Simple page function to explain what the block example is about.
+ */
+function mrp_book_utils_page() {
+  $page = array(
+    '#type' => 'markup',
+    '#markup' => t('The MRP block can be administered at <a href="@url">the block admin page</a>.', array('@url' => url('admin/structure/block'))),
+  );
+  return $page;
+}
+
+/**
+ * Implements hook_block_view().
+ *
+ * Displays the book table of contents in a block when the current page is a
+ * single-node view of a book node.
+ */
+function mrp_book_utils_block_view($delta = '') {
+  $block = array();
+  $current_bid = 0;
+  if ($node = menu_get_object()) {
+    $current_bid = empty($node->book['bid']) ? 0 : $node->book['bid'];
+  }
+  
+  variable_set('mrp_utils_book_block_mode','all pages');
+  
+  if (variable_get('mrp_utils_book_block_mode', 'all pages') == 'all pages') {
+    $block['subject'] = t('Toolkit navigation');
+    $book_menus = array();
+    $pseudo_tree = array(0 => array('below' => FALSE));
+    foreach (book_get_books() as $book_id => $book) {
+      if ($book['bid'] == $current_bid) {
+        // If the current page is a node associated with a book, the menu
+        // needs to be retrieved.
+        // $book_menus[$book_id] = mrp_book_utils_tree_output(menu_tree_all_data($node->book['menu_name'], $node->book));
+        $book_menus[$book_id] = mrp_book_utils_tree_output(menu_tree_all_data($node->book['menu_name']));
+      }
+      else {
+        // Since we know we will only display a link to the top node, there
+        // is no reason to run an additional menu tree query for each book.
+        $book['in_active_trail'] = FALSE;
+        // Check whether user can access the book link.
+        $book_node = node_load($book['nid']);
+        $book['access'] = node_access('view', $book_node);
+        $pseudo_tree[0]['link'] = $book;
+        $book_menus[$book_id] = mrp_book_utils_tree_output($pseudo_tree);
+      }
+    }
+    $book_menus['#theme'] = 'book_all_books_block';
+    $block['content'] = $book_menus;
+  }
+  elseif ($current_bid) {
+    // Only display this block when the user is browsing a book.
+    $select = db_select('node');
+    $select->addField('node', 'title');
+    $select->condition('nid', $node->book['bid']);
+    $select->addTag('node_access');
+    $title = $select->execute()->fetchField();
+    // Only show the block if the user has view access for the top-level node.
+    if ($title) {
+      $tree = menu_tree_all_data($node->book['menu_name'], $node->book);
+      // There should only be one element at the top level.
+      $data = array_shift($tree);
+      $block['subject'] = theme('book_title_link', array('link' => $data['link']));
+      $block['content'] = ($data['below']) ? mrp_book_utils_tree_output($data['below']) : '';
+    }
+  }
+
+  return $block;
+}
+	
+/**
+ * Implements hook_block_info().
+ */
+function mrp_book_utils_block_info() {
+  $block = array();
+  $block['navigation']['info'] = t('Toolkit navigation');
+  $block['navigation']['cache'] = DRUPAL_CACHE_PER_PAGE | DRUPAL_CACHE_PER_ROLE;
+
+  return $block;
+}
+
+
+/**
+ * Implements hook_block_configure().
+ */
+function mrp_book_utils_block_configure($delta = '') {
+  $block = array();
+  $options = array(
+    'all pages' => t('Show block on all pages'),
+    'book pages' => t('Show block only on book pages'),
+  );
+  $form['mrp_book_utils_block_mode'] = array(
+    '#type' => 'radios',
+    '#title' => t('Toolkit navigation block display'),
+    '#options' => $options,
+    '#default_value' => variable_get('mrp_book_utils_block_mode', 'all pages'),
+    '#description' => t("If <em>Show block on all pages</em> is selected, the block will contain the automatically generated menus for all of the site's books. If <em>Show block only on book pages</em> is selected, the block will contain only the one menu corresponding to the current page's book. In this case, if the current page is not in a book, no block will be displayed. The <em>Page specific visibility settings</em> or other visibility settings can be used in addition to selectively display this block."),
+    );
+
+  return $form;
+}
+/**
+ * Returns a complete outline of all books
+ */
+function mrp_book_utils_overview() {
+  $rows = array();
+
+  $headers = array(t('Book'), t('Operations'));
+
+  // Add any recognized books to the table list.
+  foreach (book_get_books() as $book) {
+    $rows[] = array(l($book['title'], $book['href'], $book['options']), l(t('edit order and titles'), 'admin/content/book/' . $book['nid']));
+  }
+
+  return theme('table', array('header' => $headers, 'rows' => $rows, 'empty' => t('No books available.')));
+}
+
+/*
+ * Modifies menu_tree_output() so that leaves are not necessarily
+ * hidden.
+ *
+ */
+
+function mrp_book_utils_tree_output($tree) {
+
+  global $user;
+
+  $build = array();
+  $items = array();
+ 
+  // SH We will wish to decorate the tree where checkpoints are complete
+  $sql = sprintf("SELECT DISTINCT nid FROM webform_submissions WHERE uid = %d",$user->uid);
+  $result = db_query($sql);
+  $completed_webform_nids = array();
+    foreach ($result as $record) {
+      $completed_webform_nids[$record->nid] = TRUE;
+    }
+
+  // Pull out just the menu links we are going to render so that we
+  // get an accurate count for the first/last classes.
+  foreach ($tree as $data) {
+    // SH if ($data['link']['access'] && !$data['link']['hidden']) {
+    // SH 2011-04-28 We want to expose all the leaves
+    if ($data['link']['access']) {
+    	$items[] = $data;
+    }
+  }
+
+  $router_item = menu_get_item();
+  $num_items = count($items);
+  foreach ($items as $i => $data) {
+
+    $class = array();
+
+    if ($i == 0) {
+      $class[] = 'first';
+    }
+    if ($i == $num_items - 1) {
+      $class[] = 'last';
+    }
+
+    // SH 2011-04-28 grab nid of completed webform
+    $nid = @basename($data['link']['link_path']);
+    if (array_key_exists($nid, $completed_webform_nids)) {
+      $class[]= 'mrp_completed_checkpoint';
+    }
+
+    // Set a class for the <li>-tag. Since $data['below'] may contain local
+    // tasks, only set 'expanded' class if the link also has children within
+    // the current menu.
+    if ($data['link']['has_children'] && $data['below']) {
+      $class[] = 'expanded';
+    }
+    elseif ($data['link']['has_children']) {
+      $class[] = 'expanded';
+      // $class[] = 'collapsed';
+    }
+    else {
+      $class[] = 'leaf';
+    }
+    // Set a class if the link is in the active trail.
+    if ($data['link']['in_active_trail']) {
+      $class[] = 'active-trail';
+      $data['link']['localized_options']['attributes']['class'][] = 'active-trail';
+    }
+    // Normally, l() compares the href of every link with $_GET['q'] and sets
+    // the active class accordingly. But local tasks do not appear in menu
+    // trees, so if the current path is a local task, and this link is its
+    // tab root, then we have to set the class manually.
+    if ($data['link']['href'] == $router_item['tab_root_href'] && $data['link']['href'] != $_GET['q']) {
+      $data['link']['localized_options']['attributes']['class'][] = 'active';
+    }
+
+    // Allow menu-specific theme overrides.
+    $element['#theme'] = 'menu_link__' . $data['link']['menu_name'];
+    $element['#attributes']['class'] = $class;
+    $element['#title'] = $data['link']['title'];
+    $element['#href'] = $data['link']['href'];
+    $element['#localized_options'] = !empty($data['link']['localized_options']) ? $data['link']['localized_options'] : array();
+    $element['#below'] = $data['below'] ? mrp_book_utils_tree_output($data['below']) : $data['below'];
+    $element['#original_link'] = $data['link'];
+    // Index using the link's unique mlid.
+    $build[$data['link']['mlid']] = $element;
+  }
+  if ($build) {
+    // Make sure drupal_render() does not re-order the links.
+    $build['#sorted'] = TRUE;
+    // Add the theme wrapper for outer markup.
+    // Allow menu-specific theme overrides.
+    $build['#theme_wrappers'][] = 'menu_tree__' . strtr($data['link']['menu_name'], '-', '_');
+  }
+
+  return $build;
+}
