@@ -4,4 +4,5 @@ description = "Functions to improve book handling for MRP"
 package = MRP
 version = VERSION
 core = 7.x
+
 files[] = mrp_book_utils.module
